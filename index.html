@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MarketWatch — Pannello ricerche</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, system-ui, sans-serif;
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 16px;
+    line-height: 1.5;
+  }
+  h1 { font-size: 1.4rem; }
+  .card {
+    border: 1px solid #ccc8;
+    border-radius: 10px;
+    padding: 14px;
+    margin-bottom: 14px;
+  }
+  label { display: block; font-size: 0.85rem; margin-top: 8px; font-weight: 600; }
+  input, select {
+    width: 100%;
+    padding: 8px;
+    margin-top: 4px;
+    border-radius: 6px;
+    border: 1px solid #ccc8;
+    box-sizing: border-box;
+    font-size: 1rem;
+  }
+  button {
+    margin-top: 12px;
+    padding: 10px 16px;
+    border-radius: 8px;
+    border: none;
+    background: #2563eb;
+    color: white;
+    font-size: 1rem;
+    cursor: pointer;
+    width: 100%;
+  }
+  button.secondary { background: #6b7280; }
+  button.danger { background: #dc2626; width: auto; padding: 6px 10px; font-size: 0.85rem; margin-top: 0; }
+  .search-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid #ccc4;
+  }
+  .search-item div { font-size: 0.9rem; }
+  .badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: #2563eb22;
+    margin-right: 4px;
+  }
+  #status { font-size: 0.85rem; margin-top: 8px; min-height: 1.2em; }
+  .setup { opacity: 0.85; }
+</style>
+</head>
+<body>
+
+<h1>🔔 MarketWatch</h1>
+<p>Aggiungi le ricerche che vuoi monitorare. Il bot controlla ogni pochi minuti e ti notifica su Telegram.</p>
+
+<div class="card setup">
+  <strong>Configurazione (una tantum)</strong>
+  <label>Owner/Repo GitHub (es. mariorossi/marketwatch)</label>
+  <input id="repo" placeholder="tuoutente/marketwatch">
+  <label>Personal Access Token GitHub (permessi: repo contents)</label>
+  <input id="pat" type="password" placeholder="ghp_xxxxxxxxxxxx">
+  <button class="secondary" onclick="saveConfig()">Salva configurazione</button>
+  <div id="status"></div>
+</div>
+
+<div class="card">
+  <strong>Nuova ricerca</strong>
+  <label>Cosa cerchi (keyword)</label>
+  <input id="kw" placeholder="es. iPhone 13 128GB">
+  <label>Piattaforma</label>
+  <select id="platform">
+    <option value="vinted">Vinted</option>
+    <option value="subito">Subito</option>
+  </select>
+  <label>Prezzo massimo (opzionale)</label>
+  <input id="maxprice" type="number" placeholder="es. 300">
+  <label>Città (solo Subito, opzionale)</label>
+  <input id="city" placeholder="es. milano">
+  <button onclick="addSearch()">➕ Aggiungi e salva su GitHub</button>
+</div>
+
+<div class="card">
+  <strong>Ricerche attive</strong>
+  <div id="list"></div>
+</div>
+
+<script>
+const CFG_KEY = "marketwatch_cfg";
+
+function getConfig() {
+  const raw = localStorage.getItem(CFG_KEY);
+  if (document.getElementById("repo").value) {
+    return {
+      repo: document.getElementById("repo").value.trim(),
+      pat: document.getElementById("pat").value.trim()
+    };
+  }
+  return raw ? JSON.parse(raw) : null;
+}
+
+function saveConfig() {
+  const repo = document.getElementById("repo").value.trim();
+  const pat = document.getElementById("pat").value.trim();
+  if (!repo || !pat) { setStatus("Compila repo e token."); return; }
+  localStorage.setItem(CFG_KEY, JSON.stringify({ repo, pat }));
+  setStatus("Configurazione salvata su questo dispositivo. Carico ricerche...");
+  loadSearches();
+}
+
+function setStatus(msg) {
+  document.getElementById("status").textContent = msg;
+}
+
+async function ghGetFile(path) {
+  const cfg = getConfig();
+  if (!cfg) throw new Error("Configurazione mancante");
+  const res = await fetch(`https://api.github.com/repos/${cfg.repo}/contents/${path}`, {
+    headers: { Authorization: `token ${cfg.pat}` }
+  });
+  if (res.status === 404) return { content: [], sha: null };
+  if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
+  const data = await res.json();
+  const decoded = decodeURIComponent(escape(atob(data.content)));
+  return { content: JSON.parse(decoded), sha: data.sha };
+}
+
+async function ghPutFile(path, content, sha, message) {
+  const cfg = getConfig();
+  const body = {
+    message,
+    content: btoa(unescape(encodeURIComponent(JSON.stringify(content, null, 2)))),
+  };
+  if (sha) body.sha = sha;
+  const res = await fetch(`https://api.github.com/repos/${cfg.repo}/contents/${path}`, {
+    method: "PUT",
+    headers: { Authorization: `token ${cfg.pat}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(`Errore salvataggio: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+async function loadSearches() {
+  try {
+    const { content } = await ghGetFile("data/searches.json");
+    renderList(Array.isArray(content) ? content : []);
+    setStatus("");
+  } catch (e) {
+    setStatus("Errore: " + e.message);
+  }
+}
+
+function renderList(searches) {
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+  if (searches.length === 0) {
+    list.innerHTML = "<p style='opacity:0.7'>Nessuna ricerca ancora.</p>";
+    return;
+  }
+  searches.forEach((s, i) => {
+    const div = document.createElement("div");
+    div.className = "search-item";
+    div.innerHTML = `
+      <div>
+        <span class="badge">${s.platform}</span>
+        <strong>${s.keyword}</strong>
+        ${s.maxPrice ? ` · max €${s.maxPrice}` : ""}
+        ${s.city ? ` · ${s.city}` : ""}
+      </div>
+      <button class="danger" onclick="removeSearch(${i})">Rimuovi</button>
+    `;
+    list.appendChild(div);
+  });
+}
+
+async function addSearch() {
+  const keyword = document.getElementById("kw").value.trim();
+  const platform = document.getElementById("platform").value;
+  const maxPrice = document.getElementById("maxprice").value.trim();
+  const city = document.getElementById("city").value.trim();
+  if (!keyword) { setStatus("Inserisci una keyword."); return; }
+
+  setStatus("Salvataggio in corso...");
+  try {
+    const { content, sha } = await ghGetFile("data/searches.json");
+    const searches = Array.isArray(content) ? content : [];
+    searches.push({
+      id: Date.now().toString(36),
+      keyword, platform,
+      maxPrice: maxPrice || null,
+      city: city || null
+    });
+    await ghPutFile("data/searches.json", searches, sha, `Aggiunta ricerca: ${keyword}`);
+    document.getElementById("kw").value = "";
+    document.getElementById("maxprice").value = "";
+    document.getElementById("city").value = "";
+    setStatus("Salvato ✅");
+    renderList(searches);
+  } catch (e) {
+    setStatus("Errore: " + e.message);
+  }
+}
+
+async function removeSearch(index) {
+  setStatus("Rimozione in corso...");
+  try {
+    const { content, sha } = await ghGetFile("data/searches.json");
+    const searches = Array.isArray(content) ? content : [];
+    searches.splice(index, 1);
+    await ghPutFile("data/searches.json", searches, sha, "Rimozione ricerca");
+    setStatus("Rimosso ✅");
+    renderList(searches);
+  } catch (e) {
+    setStatus("Errore: " + e.message);
+  }
+}
+
+// Auto-load config on page open
+(function init() {
+  const raw = localStorage.getItem(CFG_KEY);
+  if (raw) {
+    const cfg = JSON.parse(raw);
+    document.getElementById("repo").value = cfg.repo;
+    document.getElementById("pat").value = cfg.pat;
+    loadSearches();
+  }
+})();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,38 @@
+name: MarketWatch Check
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # ogni 10 minuti (GitHub può ritardare in orari di punta)
+  workflow_dispatch: {}       # permette anche l'avvio manuale da GitHub
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run checker
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python checker.py
+
+      - name: Commit updated seen.json
+        run: |
+          git config user.name "marketwatch-bot"
+          git config user.email "actions@github.com"
+          git add data/seen.json
+          git diff --quiet --cached || git commit -m "Aggiorna annunci visti [skip ci]"
+          git push
