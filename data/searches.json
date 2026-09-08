@@ -12,12 +12,5 @@
     "platform": "vinted",
     "maxPrice": "100",
     "city": null
-  },
-  {
-    "id": "mtsdhrpw",
-    "keyword": "vestito",
-    "platform": "vinted",
-    "maxPrice": null,
-    "city": null
   }
 ]
